@@ -249,11 +249,11 @@ class AddWireguardTunnel (Script):
 			except VMInterface.DoesNotExist:
 				iface = VMInterface (
 					virtual_machine = node,
-                                        name = if_name,
-                                        tags = wg_tag,
-					custom_field_data = { cf_name : peer.id }
+					name = if_name,
+					custom_field_data = { cf_name : peer.id },
 				)
 				iface.save ()
+				iface.tags.add (wg_tag)
 
 				self.log_success ("Created interface '%s' on peer '%s'." % (iface, node.name))
 			return iface

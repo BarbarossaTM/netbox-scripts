@@ -11,7 +11,7 @@ from dcim.models import Cable, Device, DeviceRole, DeviceType, Platform, Rack, R
 from dcim.models.device_components import FrontPort, Interface, RearPort
 
 from ipam.choices import *
-from ipam.models import IPAddress, Prefix, Role, VLAN
+from ipam.models import Aggregate, Prefix, IPAddress, Role, VLAN
 
 from extras.scripts import *
 
@@ -20,29 +20,41 @@ class ProvisionBackbonePOP (Script):
 	class Meta:
 		name = "Provision Backbone POP"
 		description = "Provision a new backbone POP"
-		field_order = ['site', 'site_no', 'rack_name', 'rack_units', 'panel_ports', 'pole_setup']
+		field_order = ['site', 'rack_name', 'rack_units', 'panel_ports', 'pole_setup']
 		commit_default = False
 
 	# Drop down for sites
 	site = ObjectVar (
-		description = "Site to be deployed",
-		queryset = Site.objects.all ()
+		model = Site,
+		description = "Site to be provisioned",
 	)
 
-	# Site No.
-	site_no = IntegerVar (description = "Site number (for Mgmt VLAN + prefix)")
-
 	# Rack name
-	rack_name = StringVar (description = "Name of the rack")
+	rack_name = StringVar (
+		description = "Name of the rack",
+		default = "R1"
+	)
 
 	# Rack units
-	rack_units = IntegerVar (description = "Number of units of this rack")
+	rack_units = IntegerVar (
+		description = "Number of units of this rack",
+		default = 9
+	)
 
-	# BBR Asset Tag
+	# BBR
+	bbr_model = ObjectVar (
+		description = "APU model",
+		model = DeviceType,
+		query_params = {
+			"manufacturer" : "pcengines",
+		}
+	)
 	bbr_asset_tag = StringVar (description = "Asset tag of backbone router")
+	bbr_serial = StringVar (description = "Serial number of backbone router")
 
 	# Switch asset tag
 	sw_asset_tag = StringVar (description = "Asset tag of switch")
+	sw_serial = StringVar (description = "Serial number of switch")
 
 	# Panel ports
 	panel_ports = IntegerVar (description = "Number of port on the patch panel (if 19\")")
@@ -57,6 +69,25 @@ class ProvisionBackbonePOP (Script):
 ################################################################################
 #                                 Methods                                      #
 ################################################################################
+
+	def find_next_free_mgmt_id (self):
+		pfx_role = Role.objects.get (name = 'Mgmt')
+		try:
+			mgmt_aggr = Aggregate.objects.get (description = "FFHO Management")
+
+			avail_pfxs = mgmt_aggr.get_available_prefixes ().iter_cidrs ()
+			for apfx in avail_pfxs:
+				if apfx.prefixlen == 24:
+					mgmt_id = int (str (apfx).split ('.')[2])
+					self.log_info ("Picked next free mgmt ID %d" % mgmt_id)
+					return mgmt_id
+
+			self.log_failure ("Didn't find next free mgmt ID :'(")
+			raise Exception ("sadness")
+
+		except Aggregate.DoesNotExist as a:
+			raise a
+
 
 	def create_mgmt_vlan (self, site, site_no):
 		vlan_id = 3000 + int (site_no)
@@ -106,7 +137,7 @@ class ProvisionBackbonePOP (Script):
 
 	def create_rack (self, site, name, units):
 		try:
-			rack = Rack.objects.get (name = name)
+			rack = Rack.objects.get (site = site, name = name)
 			self.log_info ("Rack %s already present, carrying on." % rack)
 			return rack
 		except Rack.DoesNotExist:
@@ -131,7 +162,7 @@ class ProvisionBackbonePOP (Script):
 		pp_name = "pp-%s-%s.1" % (site.slug, name)
 
 		try:
-			pp = Device.objects.get (name = pp_name)
+			pp = Device.objects.get (site = site, name = pp_name)
 			self.log_info ("Patch panel %s already present, carrying on." % pp)
 			return pp
 		except Device.DoesNotExist:
@@ -184,7 +215,7 @@ class ProvisionBackbonePOP (Script):
 		# The RearPort of the 1st surge protector of the 1st pole will be connected to PP port 1 then
 		# continuing upwards.
 		surge_type = DeviceType.objects.get (
-			manufacturer__name = 'Ubnt',
+			manufacturer__name = 'Ubiquiti',
 			model = 'Surge Protector'
 		)
 
@@ -209,7 +240,7 @@ class ProvisionBackbonePOP (Script):
 				cable = Cable (
 					termination_a = RearPort.objects.get (device = pp, name = str (pp_port)),
 					termination_b = RearPort.objects.get (device = surge, name = str (1)),
-					status = CableStatusChoices.STATUS_PLANNED
+					status = LinkStatusChoices.STATUS_PLANNED
 				)
 
 				cable.save ()
@@ -218,7 +249,7 @@ class ProvisionBackbonePOP (Script):
 				pp_port += 1
 
 
-	def setup_swtich (self, site, rack, pp, panel_ports, vlan, site_no, asset_tag):
+	def setup_swtich (self, site, rack, pp, panel_ports, vlan, site_no, asset_tag, serial_no):
 		sw_name = "sw-%s-01.in.ffho.net" % site.slug
 
 		try:
@@ -240,6 +271,7 @@ class ProvisionBackbonePOP (Script):
 			platform = Platform.objects.get (name = 'Netonix'),
 			name = sw_name,
 			asset_tag = asset_tag,
+			serial = serial_no,
 			status = DeviceStatusChoices.STATUS_PLANNED,
 			site = site,
 			rack = rack,
@@ -255,7 +287,7 @@ class ProvisionBackbonePOP (Script):
 			cable = Cable (
 				termination_a = Interface.objects.get (device = sw, name = str (n)),
 				termination_b = FrontPort.objects.get (device = pp, name = str (n)),
-				status = CableStatusChoices.STATUS_PLANNED
+				status = LinkStatusChoices.STATUS_PLANNED
 			)
 			cable.save ()
 
@@ -293,18 +325,19 @@ class ProvisionBackbonePOP (Script):
 		self.log_success ("Linked first %s ports of %s to %s" % (panel_ports, sw, pp))
 
 		# Set up Mgmt vlan interface + IP
+		sw_mgmt_ip = IPAddress (
+			address = "172.30.%d.10/24" % site_no
+		)
+		sw_mgmt_ip.save ()
+
 		sw_mgmt_iface = Interface (
 			device = sw,
 			name = "vlan%d" % vlan.vid,
 			type = InterfaceTypeChoices.TYPE_VIRTUAL,
 		)
 		sw_mgmt_iface.save ()
-
-		sw_mgmt_ip = IPAddress (
-			address = "172.30.%d.10/24" % site_no,
-			interface = sw_mgmt_iface
-		)
-		sw_mgmt_ip.save ()
+		sw_mgmt_iface.ip_addresses.add (sw_mgmt_ip)
+		sw_mgmt_iface.save ()
 
 		sw.primary_ip4 = sw_mgmt_ip
 		sw.save ()
@@ -314,7 +347,7 @@ class ProvisionBackbonePOP (Script):
 		return sw
 
 
-	def setup_bbr (self, site, rack, vlan, site_no, node_id, asset_tag, sw):
+	def setup_bbr (self, site, rack, model, vlan, site_no, node_id, asset_tag, serial_no, sw):
 		bbr_name = "bbr-%s.in.ffho.net" % site.slug
 
 		try:
@@ -327,7 +360,7 @@ class ProvisionBackbonePOP (Script):
 
 		bbr_type = DeviceType.objects.get (
 			manufacturer__name = 'PCEngines',
-			model = 'APU2c4-19"'
+			model = model
 		)
 
 		bbr = Device (
@@ -336,6 +369,7 @@ class ProvisionBackbonePOP (Script):
 			platform = Platform.objects.get (name = 'Linux'),
 			name = bbr_name,
 			asset_tag = asset_tag,
+			serial = serial_no,
 			status = DeviceStatusChoices.STATUS_PLANNED,
 			site = site,
 			rack = rack,
@@ -358,7 +392,7 @@ class ProvisionBackbonePOP (Script):
 			cable = Cable (
 				termination_a = sw_port,
 				termination_b = bbr_port,
-				status = CableStatusChoices.STATUS_PLANNED
+				status = LinkStatusChoices.STATUS_PLANNED
 			)
 			cable.save ()
 
@@ -373,45 +407,49 @@ class ProvisionBackbonePOP (Script):
 		enp3s0.save ()
 
 		# Set up Mgmt vlan interface + IP
+		bbr_mgmt_ip = IPAddress (
+			address = "172.30.%d.1/24" % site_no,
+		)
+		bbr_mgmt_ip.save ()
+
 		bbr_mgmt_iface = Interface (
 			device = bbr,
 			name = "vlan%d" % vlan.vid,
 			type = InterfaceTypeChoices.TYPE_VIRTUAL,
+			parent = bbr_bond0
 		)
 		bbr_mgmt_iface.save ()
-
-		bbr_mgmt_ip = IPAddress (
-			address = "172.30.%d.1/24" % site_no,
-			interface = bbr_mgmt_iface
-		)
-		bbr_mgmt_ip.save ()
+		bbr_mgmt_iface.ip_addresses.add (bbr_mgmt_ip)
+		bbr_mgmt_iface.save ()
 
 		self.log_success ("Configured %s on interface %s of %s" % (bbr_mgmt_ip, bbr_mgmt_iface, bbr))
 
 		# Set up loopback IPs
-		bbr_lo_iface = Interface.objects.get (device = bbr, name = "lo")
 		ipv4 = IPAddress (
 			address = "10.132.255.%s/32" % node_id,
-			interface = bbr_lo_iface
 		)
 		ipv4.save ()
 
 		ipv6 = IPAddress (
 			address = "2a03:2260:2342:ffff::%s/128" % node_id,
-			interface = bbr_lo_iface
 		)
 		ipv6.save ()
 
+		# Bind IPs to lo interface
+		bbr_lo_iface = Interface.objects.get (device = bbr, name = "lo")
+		bbr_lo_iface.ip_addresses.add (ipv4)
+		bbr_lo_iface.ip_addresses.add (ipv6)
+		bbr_lo_iface.save ()
+
+		# Set IPs a primary IPs
 		bbr.primary_ip4 = ipv4
 		bbr.primary_ip6 = ipv6
 		bbr.save ()
 		self.log_success ("Configured %s + %s on lo interface of %s" % (ipv4, ipv6, bbr))
 
 
-
 	def run (self, data, commit):
 		site = data['site']
-		site_no = data['site_no']
 
 		rack_name = data['rack_name']
 		rack_units = data['rack_units']
@@ -421,16 +459,20 @@ class ProvisionBackbonePOP (Script):
 		pole_setup = data['pole_setup']
 
 		sw_asset_tag = data['sw_asset_tag']
+		sw_serial = data['sw_serial']
 
 		bbr_asset_tag = data['bbr_asset_tag']
+		bbr_serial = data['bbr_serial']
+		bbr_model = data['bbr_model']
 		node_id = data['node_id']
 
+		mgmt_id = self.find_next_free_mgmt_id ()
 
 		# Set up POP Mgmt VLAN
-		vlan = self.create_mgmt_vlan (site, site_no)
+		vlan = self.create_mgmt_vlan (site, mgmt_id)
 
 		# Mgmt prefix
-		prefix = self.create_mgmt_prefix (site, site_no, vlan)
+		prefix = self.create_mgmt_prefix (site, mgmt_id, vlan)
 
 		# Create rack
 		rack = self.create_rack (site, rack_name, rack_units)
@@ -438,10 +480,11 @@ class ProvisionBackbonePOP (Script):
 		# Create patch panel
 		pp = self.create_patch_panel (site, rack, rack_name, panel_ports)
 
+		# Create surges and connect them to panel rear ports
 		self.create_and_connect_surges (site, rack, pp, pole_setup)
 
 		# Create switch
-		sw = self.setup_swtich (site, rack, pp, panel_ports, vlan, site_no, sw_asset_tag)
+		sw = self.setup_swtich (site, rack, pp, panel_ports, vlan, mgmt_id, sw_asset_tag, sw_serial)
 
 		# Create backbone router
-		bbr = self.setup_bbr (site, rack, vlan, site_no, node_id, bbr_asset_tag, sw)
+		bbr = self.setup_bbr (site, rack, bbr_model, vlan, mgmt_id, node_id, bbr_asset_tag, bbr_serial, sw)

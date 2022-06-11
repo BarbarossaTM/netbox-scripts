@@ -20,7 +20,6 @@ from virtualization.models import VirtualMachine, VMInterface
 
 import netaddr
 
-
 prefix_length_by_af = {
 	4: 31,
 	6: 64,
@@ -31,7 +30,42 @@ ip_mask_by_af = {
 	6: 126,
 }
 
+infra_suffix = ".in.ffho.net"
+
+################################################################################
+#                                 Helpers                                      #
+################################################################################
+
 class MyException (Exception): {}
+
+
+def get_prefix_desc (server, client):
+	server = server.replace (infra_suffix, "")
+	client = client.replace (infra_suffix, "")
+
+	return "%s <-> %s" % (server, client)
+
+
+def get_iface_name (node_name):
+	node = node_name.replace (infra_suffix, "")
+	if_name = "wg-%s" % node.replace ('.', '-')
+	if len (if_name) > 15:
+		if_name = if_name[0:15]
+
+	return if_name
+
+
+def node_has_wg_keys_set (node):
+	try:
+		wg = node.local_context_data['wireguard']
+		return wg['privkey'] and wg['pubkey']
+	except KeyError:
+		return False
+
+
+################################################################################
+#                              Script class                                    #
+################################################################################
 
 class AddWireguardTunnel (Script):
 	class Meta:
@@ -87,24 +121,15 @@ class AddWireguardTunnel (Script):
 #                                 Methods                                      #
 ################################################################################
 
-
-	def node_has_wg_keys_set (self, node):
-		try:
-			wg = node.local_context_data['wireguard']
-			return wg['privkey'] and wg['pubkey']
-		except KeyError:
-			return False
-
-
 	def verify_wg_keys_present (self, server, client):
 		err = False
-		if not self.node_has_wg_keys_set (server):
+		if not node_has_wg_keys_set (server):
 			self.log_failure ("Server peer %s does not have Wireguard keys configured in config context!" % server.name)
 			err = True
 		else:
 			self.log_info ("Found Wireguard keys for server peer %s." % server.name)
 
-		if not self.node_has_wg_keys_set (client):
+		if not node_has_wg_keys_set (client):
 			self.log_failure ("Client peer [%s](%s) does not have Wireguard keys configured in config context!" % (client.name, client.get_absolute_url ()))
 			err = True
 		else:
@@ -117,7 +142,7 @@ class AddWireguardTunnel (Script):
 	def get_tunnel_prefix (self, server, client, af):
 		pfx_role = Role.objects.get (name = 'VPN-X-Connect')
 		desired_plen = prefix_length_by_af[af]
-		pfx_desc = "%s <-> %s" % (server.name.split ('.')[0], client.name.split ('.')[0])
+		pfx_desc = get_prefix_desc (server.name, client.name)
 
 		try:
 			prefixes = Prefix.objects.filter (
@@ -199,10 +224,7 @@ class AddWireguardTunnel (Script):
 	def create_interface (self, tun, node, peer):
 		peer_type = 'device' if type (peer) == Device else 'vm'
 		cf_name = 'wg_peer_%s' % peer_type
-
-		if_name = "wg-%s" % peer.name.split ('.')[0]
-		if len (if_name) > 15:
-			if_name = if_name[0:15]
+		if_name = get_iface_name (peer.name)
 
 		try:
 			wg_tag = Tag.objects.get (

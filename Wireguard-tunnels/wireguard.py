@@ -290,7 +290,7 @@ class AddWireguardTunnel (Script):
 			iface.ip_addresses.add (ip)
 			iface.save ()
 
-			self.log_success ("Configured IP %s on interface %s on %s " % (ip, node, iface))
+			self.log_success ("Configured IP %s on interface %s on %s " % (ip, iface, node))
 			return
 
 		# IP existed

@@ -162,7 +162,7 @@ class AddWireguardTunnel (Script):
 		prefixes = Prefix.objects.filter (
 			role = pfx_role,
 			status = PrefixStatusChoices.STATUS_CONTAINER,
-			is_pool = True
+			is_pool = False
 		)
 
 		for pfx in prefixes:

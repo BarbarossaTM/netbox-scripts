@@ -5,8 +5,14 @@ This repository contains some
 [Custom Scripts](https://docs.netbox.dev/en/stable/customization/custom-scripts/)
 I wrote to make life of operators easier.
 
-Currently the two scripts here were written for the [Freifunk Hochstift](https://www.ffho.net) network,
+Most scripts here were written for the [Freifunk Hochstift](https://www.ffho.net) network,
 and are used to provision NetBox data to be consumed by the [FFHO Salt stack](https://github.com/FreifunkHochstift/ffho-salt-public).
+
+## Connect Helper
+
+This script gets two Devices as input and will connect all rear ports with a cable.  This is intended
+to easy setting up a lot of patch panels with a lot of ports.  This might be extended in the future
+with more bells and whistels, to be more clever and allow setting the kind of cable (CAT6, SMF, MMF, ...) etc.
 
 ## Provision Backbone POP
 
@@ -22,7 +28,7 @@ See the screenshots in the [doc](ProvisionBackbonePOP/doc) folder for an example
 
 ## Wireguard tunnels
 
-The 2nd script provisions Wireguard tunnels in NetBox between two nodes, allowing each side
+This script provisions Wireguard tunnels in NetBox between two nodes, allowing each side
 to be a Device or a VM.  To model the connection between two nodes custom fields (type object)
 on interfaces are used which will be set to the remote Device or VM.  IP allocation happens
 programatically so that the only input to the script are server + client Device or VM.

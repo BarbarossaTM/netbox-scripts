@@ -46,9 +46,13 @@ def get_prefix_desc (server, client):
 	return "%s <-> %s" % (server, client)
 
 
-def get_iface_name (node_name):
+def get_iface_name (node_name, tun):
+	prefix = "wg"
+	if tun['oobm']:
+		prefix = "oob"
+
 	node = node_name.replace (infra_suffix, "")
-	if_name = "wg-%s" % node.replace ('.', '-')
+	if_name = "%s-%s" % (prefix, node.replace ('.', '-'))
 	if len (if_name) > 15:
 		if_name = if_name[0:15]
 
@@ -73,7 +77,8 @@ class AddWireguardTunnel (Script):
 		server_vm = "Server (VM)"
 		client_device = "Client (device)"
 		client_vm = "Client (VM)"
-		field_order = ['server_device', 'server_vm', 'client_device', 'client_vm']
+		oobm = "Out of Band Mgmt tunnel"
+		field_order = ['server_device', 'server_vm', 'client_device', 'client_vm', 'oobm']
 		commit_default = False
 
 	# Drop down for server device
@@ -116,6 +121,10 @@ class AddWireguardTunnel (Script):
 		description = "Client end (if VM)"
 	)
 
+	oobm = BooleanVar (
+		description = "Tunnel should be used for OOBM access to client device"
+	)
+
 
 ################################################################################
 #                                 Methods                                      #
@@ -139,8 +148,9 @@ class AddWireguardTunnel (Script):
 			raise MyException ("Pleae configure Wiregurad public and private key in nodes config context.")
 
 
-	def get_tunnel_prefix (self, server, client, af):
-		pfx_role = Role.objects.get (name = 'VPN-X-Connect')
+	def get_tunnel_prefix (self, server, client, af, oobm):
+		pfx_role_slug = "vpn-oobm" if oobm else "vpn-x-connect"
+		pfx_role = Role.objects.get (slug = pfx_role_slug)
 		desired_plen = prefix_length_by_af[af]
 		pfx_desc = get_prefix_desc (server.name, client.name)
 
@@ -224,7 +234,7 @@ class AddWireguardTunnel (Script):
 	def create_interface (self, tun, node, peer):
 		peer_type = 'device' if type (peer) == Device else 'vm'
 		cf_name = 'wg_peer_%s' % peer_type
-		if_name = get_iface_name (peer.name)
+		if_name = get_iface_name (peer.name, tun)
 
 		try:
 			wg_tag = Tag.objects.get (
@@ -324,13 +334,14 @@ class AddWireguardTunnel (Script):
 			self.configure_ip (tunnel['client'], tunnel['iface']['client'], ips[1], ip_mask_by_af[af])
 
 
-	def configure_tunnel (self, server, client):
+	def configure_tunnel (self, server, client, oobm):
 		# Do the peers have Wireguard keys set in config context?
 		self.verify_wg_keys_present (server, client)
 
 		tun = {
 			"server" : server,
 			"client" : client,
+			"oobm" : oobm,
 			"iface" : {
 				"server" : None,
 				"client" : None
@@ -353,7 +364,7 @@ class AddWireguardTunnel (Script):
 
 		# Create the IPv4 + IPv6 transfer network, if not already present
 		for af in [ 4, 6 ]:
-			tun['prefix'][af] = self.get_tunnel_prefix (server, client, af)
+			tun['prefix'][af] = self.get_tunnel_prefix (server, client, af, oobm)
 
 		tun['iface']['server'] = self.create_interface (tun, server, client)
 		tun['iface']['client'] = self.create_interface (tun, client, server)
@@ -368,6 +379,7 @@ class AddWireguardTunnel (Script):
 		server_vm = data['server_vm']
 		client_device = data['client_device']
 		client_vm = data['client_vm']
+		oobm = data['oobm']
 
 		# Validate if input makes sense, we need one server and one client peer
 		if (server_device and server_vm):
@@ -387,7 +399,7 @@ class AddWireguardTunnel (Script):
 
 
 		try:
-			self.configure_tunnel (server, client)
+			self.configure_tunnel (server, client, oobm)
 		except MyException as m:
 			return m
 

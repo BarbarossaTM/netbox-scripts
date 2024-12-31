@@ -33,5 +33,4 @@ to be a Device or a VM.  To model the connection between two nodes custom fields
 on interfaces are used which will be set to the remote Device or VM.  IP allocation happens
 programatically so that the only input to the script are server + client Device or VM.
 
-The only prerequisites for the script to work are the custom fields and Wireguard keys configured
-on the peers with config context.
+See the script's [README](Wireguard-tunnels/README.md) for more details.

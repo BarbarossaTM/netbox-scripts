@@ -14,7 +14,7 @@ from extras.models import Tag
 from extras.scripts import *
 
 from ipam.choices import *
-from ipam.models import IPAddress, Prefix, Role
+from ipam.models import IPAddress, Prefix, Role, VRF
 
 from virtualization.models import VirtualMachine, VMInterface
 
@@ -31,6 +31,10 @@ ip_mask_by_af = {
 }
 
 infra_suffix = ".in.ffho.net"
+
+PREFIX_ROLE_SLUG_REGULAR = "vpn-x-connect"
+PREFIX_ROLE_SLUG_OOBM = "vpn-oobm"
+VRF_NAME_OOBM = "vrf_oobm"
 
 ################################################################################
 #                                 Helpers                                      #
@@ -121,6 +125,7 @@ class AddWireguardTunnel (Script):
 		description = "Client end (if VM)"
 	)
 
+	# Should this be a tunnel for Out-of-band management?
 	oobm = BooleanVar (
 		description = "Tunnel should be used for OOBM access to client device"
 	)
@@ -133,7 +138,7 @@ class AddWireguardTunnel (Script):
 	def verify_wg_keys_present (self, server, client):
 		err = False
 		if not node_has_wg_keys_set (server):
-			self.log_failure ("Server peer %s does not have Wireguard keys configured in config context!" % server.name)
+			self.log_failure ("Server peer [%s](%s) does not have Wireguard keys configured in config context!" % (server.name, server.get_absolute_url ()))
 			err = True
 		else:
 			self.log_info ("Found Wireguard keys for server peer %s." % server.name)
@@ -149,7 +154,7 @@ class AddWireguardTunnel (Script):
 
 
 	def get_tunnel_prefix (self, server, client, af, oobm):
-		pfx_role_slug = "vpn-oobm" if oobm else "vpn-x-connect"
+		pfx_role_slug = PREFIX_ROLE_SLUG_OOBM if oobm else PREFIX_ROLE_SLUG_REGULAR
 		pfx_role = Role.objects.get (slug = pfx_role_slug)
 		desired_plen = prefix_length_by_af[af]
 		pfx_desc = get_prefix_desc (server.name, client.name)
@@ -304,7 +309,6 @@ class AddWireguardTunnel (Script):
 			return
 
 		# IP existed
-		msg = "IP address %s for interface %s on %s already existed" % (ip, iface, node)
 		if ip.assigned_object:
 			self.log_info ("IP %s already exists and assigned to interface %s on %s" % (ip, ip.assigned_object, node))
 
@@ -332,6 +336,21 @@ class AddWireguardTunnel (Script):
 
 			# Client
 			self.configure_ip (tunnel['client'], tunnel['iface']['client'], ips[1], ip_mask_by_af[af])
+
+	def set_interface_vrf(self, node, iface, vrf_name):
+		try:
+			vrf = VRF.objects.get(name=vrf_name)
+		except VRF.DoesNotExist:
+			raise MyException(f"VRF {vrf_name} does not exist, dying of shame!")
+
+		if iface.vrf == vrf:
+			self.log_info(f"Interface {iface.name} on {node.name} already assigned to VRF {vrf_name}")
+			return
+
+		iface.vrf = vrf
+		iface.save()
+
+		self.log_success(f"Assigned {iface.name} on {node.name} to VRF {vrf_name}.")
 
 
 	def configure_tunnel (self, server, client, oobm):
@@ -368,6 +387,8 @@ class AddWireguardTunnel (Script):
 
 		tun['iface']['server'] = self.create_interface (tun, server, client)
 		tun['iface']['client'] = self.create_interface (tun, client, server)
+		if oobm:
+			self.set_interface_vrf(client, tun['iface']['client'], VRF_NAME_OOBM)
 
 		self.configure_ips (tun)
 
